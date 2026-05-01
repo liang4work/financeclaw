@@ -1,22 +1,38 @@
 use anyhow::Result;
+use clap::Parser;
 use rig::client::{CompletionClient, ProviderClient};
 use rig::completion::Prompt;
 use rig::providers::openai;
 use tokio;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// system prompt
+    #[arg(short, long)]
+    system: String,
+
+    /// prompt file
+    #[arg(short, long)]
+    file: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    let args = Args::parse();
+    let file = std::fs::read_to_string(&args.file)?;
+
     // Create OpenAI client
-    let client = openai::Client::from_env()?;
+    let client = openai::CompletionsClient::from_env()?;
 
     // Create agent with a single context prompt
     let comedian_agent = client
-        .agent("gpt-5.2")
-        .preamble("You are a comedian here to entertain the user using humour and jokes.")
+        .agent("LongCat-Flash-Thinking-2601")
+        .preamble(&args.system)
         .build();
 
     // Prompt the agent and print the response
-    let response = comedian_agent.prompt("Entertain me!").await?;
+    let response = comedian_agent.prompt(file.as_str()).await?;
 
     println!("{response}");
 
