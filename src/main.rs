@@ -34,8 +34,8 @@ impl Tool for Adder {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "x": { "type": "number", "description": "First number" },
-                    "y": { "type": "number", "description": "Second number" }
+                    "x": { "type": "number", "description": "第一个数" },
+                    "y": { "type": "number", "description": "第二个数" }
                 }
             }),
         }
@@ -61,21 +61,28 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("start...");
-    let openai_client = openai::CompletionsClient::from_env()?;
-    let agent = openai_client
-        .agent(openai::GPT_4O)
-        .preamble("计算两个数值相加,请使用数值相加MCP")
-        // .tool_server_handle(tool_server_handle)
+    let args = Args::parse();
+
+    // 开始对话流程
+    let file = std::fs::read_to_string(&args.file)?;
+
+    // Create OpenAI client
+    let client = openai::CompletionsClient::from_env()?;
+
+    // Create agent with a single context prompt
+    let comedian_agent = client
+        .agent("LongCat-Flash-Thinking-2601")
+        .preamble(&args.system)
         .tool(Adder)
         .build();
 
-    let res = agent
-        .prompt("1223与23222相加等于多少")
-        .max_turns(20)
-        .await?;
+    // Prompt the agent and print the response
+    let response = comedian_agent.prompt(file.as_str()).await?;
 
-    println!("GPT-4o: {res}");
+    println!("{response}");
+
+    // 等待MCP服务
+    // let _ = mcp_handle.await;
 
     Ok(())
 }
