@@ -81,8 +81,5 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{response}");
 
-    // 等待MCP服务
-    // let _ = mcp_handle.await;
-
     Ok(())
 }
