@@ -24,14 +24,14 @@ async fn main() -> anyhow::Result<()> {
 
     // 开始对话流程
     let file = std::fs::read_to_string(&args.file)?;
-
+    let skills_prompt = skills::get_skills()?;
     // Create OpenAI client
     let client = openai::CompletionsClient::from_env()?;
 
     // Create agent with a single context prompt
     let comedian_agent = client
         .agent("LongCat-Flash-Thinking-2601")
-        .preamble(&args.system)
+        .preamble(&(args.system + &skills_prompt))
         .tool(inter_tools::Adder)
         .tool(inter_tools::Compare)
         .build();
