@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let client = openai::CompletionsClient::from_env()?;
 
     // Create agent with a single context prompt
-    let comedian_agent = client
+    let my_agent = client
         .agent("LongCat-Flash-Thinking-2601")
         .preamble(&(args.system + &skills_prompt))
         .tool(inter_tools::Adder)
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     // Prompt the agent and print the response
-    let response = comedian_agent.prompt(file.as_str()).await?;
+    let response = my_agent.prompt(file.as_str()).await?;
 
     println!("{response}");
 
