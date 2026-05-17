@@ -4,7 +4,8 @@ const MUNBERS: &[char] = &[
     '柒', '捌', '玖', '拾',
 ];
 
-const RMB_UNIT: &str = "元";
+const RMB_UNIT: char = '元';
+const PERCENT_UNIT: char = '%';
 
 enum UnitType {
     RMB,
@@ -57,10 +58,10 @@ impl<'a> NumberIterator<'a> {
         let mut alpha = String::new();
         let mut ch_char = String::new();
         let is_contain_unit = raw.ends_with(RMB_UNIT);
-        let is_contain_percent = raw.ends_with('%');
+        let is_contain_percent = raw.ends_with(PERCENT_UNIT);
 
         let raw = if is_contain_unit {
-            &raw[..raw.len() - RMB_UNIT.len()]
+            &raw[..raw.len() - 3]
         } else {
             raw
         };

@@ -1,4 +1,4 @@
 /target
 run.sh
 Cargo.lock
-prompt*.txt
+/prompt*.txt
