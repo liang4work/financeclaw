@@ -1,7 +1,7 @@
 const MUNBERS: &[char] = &[
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ',', '零', '一', '二', '三', '四', '五',
-    '六', '七', '八', '九', '十', '百', '千', '万', '亿', '壹', '贰', '叁', '肆', '伍', '陆', '柒',
-    '捌', '玖', '拾',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ',', '-', '零', '一', '二', '三', '四',
+    '五', '六', '七', '八', '九', '十', '百', '千', '万', '亿', '壹', '贰', '叁', '肆', '伍', '陆',
+    '柒', '捌', '玖', '拾',
 ];
 
 /// 触发字符：检测到这些字符才认为是金额
@@ -46,7 +46,7 @@ impl<'a> NumberIterator<'a> {
             if c == ',' || c == '元' {
                 continue;
             }
-            if c.is_ascii_digit() || c == '.' {
+            if c.is_ascii_digit() || c == '.' || c == '-' {
                 alpha.push(c);
             } else {
                 ch_char.push(c);
@@ -327,7 +327,7 @@ mod tests {
         let mut iter = NumberIterator::new("收入100元，支出200.50元，结余-50元");
         assert_eq!(iter.next(), Some(item(100.0)));
         assert_eq!(iter.next(), Some(item(200.5)));
-        assert_eq!(iter.next(), Some(item(50.0)));
+        assert_eq!(iter.next(), Some(item(-50.0)));
         assert_eq!(iter.next(), None);
     }
 
@@ -454,6 +454,30 @@ mod tests {
         // "1.5亿" → 1.5 × 100000000 = 150000000
         let mut iter = NumberIterator::new("数据1.5亿人次");
         assert_eq!(iter.next(), Some(item(150_000_000.0)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_negative_amount() {
+        // "-50元" → -50
+        let mut iter = NumberIterator::new("亏损-50元");
+        assert_eq!(iter.next(), Some(item(-50.0)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_negative_decimal() {
+        // "-123.45元" → -123.45
+        let mut iter = NumberIterator::new("负债-123.45元");
+        assert_eq!(iter.next(), Some(item(-123.45)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_negative_mixed_chinese() {
+        // "-1.5亿" → -1.5 × 100000000 = -150000000
+        let mut iter = NumberIterator::new("坏账-1.5亿元");
+        assert_eq!(iter.next(), Some(item(-150_000_000.0)));
         assert_eq!(iter.next(), None);
     }
 }
