@@ -4,17 +4,31 @@ const MUNBERS: &[char] = &[
     '柒', '捌', '玖', '拾',
 ];
 
+const RMB_UNIT: &str = "元";
+
+enum UnitType {
+    RMB,
+    PERSENT,
+    NONE,
+}
+
 /// 触发字符：检测到这些字符才认为是金额
 const TRIGGERS: &[char] = &['元', '万', '亿', '%'];
 
 pub struct NumberIterator<'a> {
     data: &'a str,
     index: usize,
+    /// 上一轮匹配结束位置，用于提取前缀文本
+    last_end: usize,
 }
 
 impl<'a> NumberIterator<'a> {
     pub fn new(data: &'a str) -> Self {
-        Self { data, index: 0 }
+        Self {
+            data,
+            index: 0,
+            last_end: 0,
+        }
     }
 
     fn is_money_char(&self, c: char) -> bool {
@@ -39,11 +53,19 @@ impl<'a> NumberIterator<'a> {
     }
 
     /// 将原始匹配文本拆分为阿拉伯数字部分和中文数字部分，再合并为统一数值
-    fn split_raw(raw: &str) -> NumberItem {
+    fn split_raw(raw: &str) -> (f64, UnitType) {
         let mut alpha = String::new();
         let mut ch_char = String::new();
+        let is_contain_unit = raw.ends_with(RMB_UNIT);
+        let is_contain_percent = raw.ends_with('%');
+
+        let raw = if is_contain_unit {
+            &raw[..raw.len() - RMB_UNIT.len()]
+        } else {
+            raw
+        };
         for c in raw.chars() {
-            if c == ',' || c == '元' {
+            if c == ',' {
                 continue;
             }
             if c.is_ascii_digit() || c == '.' || c == '-' {
@@ -63,9 +85,32 @@ impl<'a> NumberIterator<'a> {
         // 解析中文数字部分
         let chinese_value = chinese_to_number(&ch_char);
 
-        NumberItem {
-            value: alpha_value * chinese_value,
-        }
+        let unit_type = if is_contain_percent {
+            UnitType::PERSENT
+        } else if is_contain_unit {
+            UnitType::RMB
+        } else {
+            UnitType::NONE
+        };
+        (alpha_value * chinese_value, unit_type)
+    }
+}
+
+/// 格式化数值为字符串，抹去整数末尾无意义的 ".0"
+fn format_value(v: f64, use_unit: UnitType) -> String {
+    let content: String;
+    // 第一步：判断是不是 有限的、无小数的整数
+    if v.is_finite() {
+        // 第二步：安全转成整数（i64 全覆盖，不会溢出）
+        content = format!("{}", v.trunc() as i64);
+    } else {
+        // 非整数才输出浮点数
+        content = format!("{}", v);
+    }
+    match use_unit {
+        UnitType::RMB => content + "元",
+        UnitType::PERSENT => content + "%",
+        UnitType::NONE => content,
     }
 }
 
@@ -221,6 +266,7 @@ fn chinese_to_number(s: &str) -> f64 {
 #[derive(Debug, PartialEq)]
 pub struct NumberItem {
     pub value: f64,
+    pub content: String,
 }
 
 impl<'a> Iterator for NumberIterator<'a> {
@@ -274,7 +320,14 @@ impl<'a> Iterator for NumberIterator<'a> {
 
         self.index = end_pos;
         let raw = &self.data[money_start..end_pos];
-        Some(Self::split_raw(raw))
+        let (value, is_contain_unit) = Self::split_raw(raw);
+        let prefix = &self.data[self.last_end..money_start];
+        let value_str = format_value(value, is_contain_unit);
+        let content: String;
+        content = format!("{}{}", prefix, value_str);
+
+        self.last_end = end_pos;
+        Some(NumberItem { value, content })
     }
 }
 
@@ -282,8 +335,11 @@ impl<'a> Iterator for NumberIterator<'a> {
 mod tests {
     use super::*;
 
-    fn item(value: f64) -> NumberItem {
-        NumberItem { value }
+    fn item(value: f64, content: &str) -> NumberItem {
+        NumberItem {
+            value,
+            content: content.into(),
+        }
     }
 
     #[test]
@@ -301,33 +357,39 @@ mod tests {
     #[test]
     fn test_simple_number() {
         // "元" 触发 → 反向找到 "123.45" → 数值 123.45
+        // content = "花费了" + "123.45"
         let mut iter = NumberIterator::new("花费了123.45元");
-        assert_eq!(iter.next(), Some(item(123.45)));
+        assert_eq!(iter.next(), Some(item(123.45, "花费了123元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_chinese_number() {
         // "元" 触发 → 反向找到 "一百二十三" → 数值 123
+        // content = "一共" + "123"
         let mut iter = NumberIterator::new("一共一百二十三元");
-        assert_eq!(iter.next(), Some(item(123.0)));
+        assert_eq!(iter.next(), Some(item(123.0, "一共123元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_chinese_number_clean() {
         // "元" 触发 → 反向找到 "五百" → 数值 500
+        // content = "花费了" + "500"
         let mut iter = NumberIterator::new("花费了五百元");
-        assert_eq!(iter.next(), Some(item(500.0)));
+        assert_eq!(iter.next(), Some(item(500.0, "花费了500元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_multiple_amounts() {
         let mut iter = NumberIterator::new("收入100元，支出200.50元，结余-50元");
-        assert_eq!(iter.next(), Some(item(100.0)));
-        assert_eq!(iter.next(), Some(item(200.5)));
-        assert_eq!(iter.next(), Some(item(-50.0)));
+        // 1st: prefix="收入", raw="100元", alpha="100" → 100
+        // 2nd: prefix="，支出", raw="200.50元", alpha="200.50" → 200.5
+        // 3rd: prefix="，结余", raw="-50元", alpha="-50" → -50
+        assert_eq!(iter.next(), Some(item(100.0, "收入100元")));
+        assert_eq!(iter.next(), Some(item(200.5, "，支出200元")));
+        assert_eq!(iter.next(), Some(item(-50.0, "，结余-50元")));
         assert_eq!(iter.next(), None);
     }
 
@@ -341,33 +403,36 @@ mod tests {
     #[test]
     fn test_mixed_with_triggers() {
         let mut iter = NumberIterator::new("价格123元，合计四百五十六万");
-        assert_eq!(iter.next(), Some(item(123.0)));
-        // "万" 触发 → "四百五十六万" → 456 × 10000 = 4560000
-        assert_eq!(iter.next(), Some(item(4_560_000.0)));
+        // 1st: prefix="价格", raw="123元", alpha="123" → 123
+        assert_eq!(iter.next(), Some(item(123.0, "价格123元")));
+        // 2nd: prefix="，合计", raw="四百五十六万" → 456×10000=4560000
+        assert_eq!(iter.next(), Some(item(4_560_000.0, "，合计4560000")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_amount_with_comma() {
+        // prefix="总额", raw="1,234,567.89元", alpha="1234567.89" → 1234567.89
         let mut iter = NumberIterator::new("总额1,234,567.89元");
-        assert_eq!(iter.next(), Some(item(1_234_567.89)));
+        assert_eq!(iter.next(), Some(item(1_234_567.89, "总额1234567元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_uppercase_chinese() {
-        // "万" 触发 → "壹万贰" → 1×10000 + 2 = 10002
-        // "元" 触发 → "肆拾伍" → 45
         let mut iter = NumberIterator::new("人民币壹万贰仟叁佰肆拾伍元整");
-        assert_eq!(iter.next(), Some(item(10_002.0)));
-        assert_eq!(iter.next(), Some(item(45.0)));
+        // 1st: "万"触发, prefix="人民币", raw="壹万贰" → 1×10000+2=10002
+        assert_eq!(iter.next(), Some(item(10_002.0, "人民币10002")));
+        // 2nd: "元"触发, prefix="仟叁佰", raw="肆拾伍元" → 45
+        assert_eq!(iter.next(), Some(item(45.0, "仟叁佰45元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_amount_at_start() {
+        // prefix="" (match at start), raw="99.9元", alpha="99.9" → 99.9
         let mut iter = NumberIterator::new("99.9元起");
-        assert_eq!(iter.next(), Some(item(99.9)));
+        assert_eq!(iter.next(), Some(item(99.9, "99元")));
         assert_eq!(iter.next(), None);
     }
 
@@ -395,9 +460,10 @@ mod tests {
     #[test]
     fn test_adjacent_amounts_with_trigger() {
         let mut iter = NumberIterator::new("前款100元后款200万元");
-        assert_eq!(iter.next(), Some(item(100.0)));
-        // "200万" → 200 × 10000 = 2000000
-        assert_eq!(iter.next(), Some(item(2_000_000.0)));
+        // 1st: prefix="前款", raw="100元", alpha="100" → 100
+        assert_eq!(iter.next(), Some(item(100.0, "前款100元")));
+        // 2nd: prefix="后款", raw="200万元" → 200×10000=2000000
+        assert_eq!(iter.next(), Some(item(2_000_000.0, "后款2000000元")));
         assert_eq!(iter.next(), None);
     }
 
@@ -405,10 +471,17 @@ mod tests {
     fn test_collect_all() {
         let results: Vec<NumberItem> =
             NumberIterator::new("苹果10元，香蕉20.5元，合计三十元五角").collect();
-        // "10元": → 10
-        // "20.5元": → 20.5
-        // "三十元五": → 35
-        assert_eq!(results, vec![item(10.0), item(20.5), item(35.0)]);
+        // 1st: prefix="苹果", raw="10元" → 10
+        // 2nd: prefix="，香蕉", raw="20.5元" → 20.5
+        // 3rd: prefix="，合计", raw="三十元五" → 35
+        assert_eq!(
+            results,
+            vec![
+                item(10.0, "苹果10元"),
+                item(20.5, "，香蕉20元"),
+                item(35.0, "，合计35")
+            ]
+        );
     }
 
     #[test]
@@ -420,64 +493,71 @@ mod tests {
 
     #[test]
     fn test_chinese_big_numbers() {
-        // "万" 触发 → "一百万亿零三千亿" → 100300000000000
+        // "万"触发 → prefix="全国GDP达到", raw="一百万亿零三千亿" → 100300000000000
         let mut iter = NumberIterator::new("全国GDP达到一百万亿零三千亿");
-        assert_eq!(iter.next(), Some(item(100_300_000_000_000.0)));
+        assert_eq!(
+            iter.next(),
+            Some(item(100_300_000_000_000.0, "全国GDP达到100300000000000"))
+        );
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_billion_trigger() {
+        // prefix="去年利润", raw="五十亿元" → 5000000000
         let mut iter = NumberIterator::new("去年利润五十亿元");
-        assert_eq!(iter.next(), Some(item(5_000_000_000.0)));
+        assert_eq!(
+            iter.next(),
+            Some(item(5_000_000_000.0, "去年利润5000000000元"))
+        );
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_percent_trigger() {
-        // "25%" → "%" 是单位标记，数值为 25
+        // "25%" → prefix="增长率达到", raw="25%", alpha="25" → 25
         let mut iter = NumberIterator::new("增长率达到25%");
-        assert_eq!(iter.next(), Some(item(25.0)));
+        assert_eq!(iter.next(), Some(item(25.0, "增长率达到25%")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_mixed_alpha_and_chinese() {
-        // "3000万元" → 3000 × 10000 = 30000000
+        // "3000万元" → 3000×10000=30000000, prefix="项目投资"
         let mut iter = NumberIterator::new("项目投资3000万元");
-        assert_eq!(iter.next(), Some(item(30_000_000.0)));
+        assert_eq!(iter.next(), Some(item(30_000_000.0, "项目投资30000000元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_alpha_chinese_mixed() {
-        // "1.5亿" → 1.5 × 100000000 = 150000000
+        // "1.5亿" → 1.5×100000000=150000000, prefix="数据"
         let mut iter = NumberIterator::new("数据1.5亿人次");
-        assert_eq!(iter.next(), Some(item(150_000_000.0)));
+        assert_eq!(iter.next(), Some(item(150_000_000.0, "数据150000000")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_negative_amount() {
-        // "-50元" → -50
+        // "-50元" → -50, prefix="亏损"
         let mut iter = NumberIterator::new("亏损-50元");
-        assert_eq!(iter.next(), Some(item(-50.0)));
+        assert_eq!(iter.next(), Some(item(-50.0, "亏损-50元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_negative_decimal() {
-        // "-123.45元" → -123.45
+        // "-123.45元" → -123.45, prefix="负债"
         let mut iter = NumberIterator::new("负债-123.45元");
-        assert_eq!(iter.next(), Some(item(-123.45)));
+        assert_eq!(iter.next(), Some(item(-123.45, "负债-123元")));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_negative_mixed_chinese() {
-        // "-1.5亿" → -1.5 × 100000000 = -150000000
+        // "-1.5亿" → -1.5×100000000=-150000000, prefix="坏账"
         let mut iter = NumberIterator::new("坏账-1.5亿元");
-        assert_eq!(iter.next(), Some(item(-150_000_000.0)));
+        assert_eq!(iter.next(), Some(item(-150_000_000.0, "坏账-150000000元")));
         assert_eq!(iter.next(), None);
     }
 }
