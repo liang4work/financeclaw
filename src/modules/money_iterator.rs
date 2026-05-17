@@ -38,7 +38,7 @@ impl<'a> NumberIterator<'a> {
         Some(i)
     }
 
-    /// 将原始匹配文本拆分为阿拉伯数字部分和中文数字部分
+    /// 将原始匹配文本拆分为阿拉伯数字部分和中文数字部分，再合并为统一数值
     fn split_raw(raw: &str) -> NumberItem {
         let mut alpha = String::new();
         let mut ch_char = String::new();
@@ -52,14 +52,175 @@ impl<'a> NumberIterator<'a> {
                 ch_char.push(c);
             }
         }
-        NumberItem { alpha, ch_char }
+
+        // 解析阿拉伯数字部分
+        let alpha_value: f64 = if alpha.is_empty() {
+            1.0
+        } else {
+            alpha.parse().unwrap_or(1.0)
+        };
+
+        // 解析中文数字部分
+        let chinese_value = chinese_to_number(&ch_char);
+
+        NumberItem {
+            value: alpha_value * chinese_value,
+        }
     }
+}
+
+/// 判断字符是否为中文数字字符
+fn is_chinese_number_char(c: char) -> bool {
+    matches!(
+        c,
+        '零' | '一'
+            | '二'
+            | '三'
+            | '四'
+            | '五'
+            | '六'
+            | '七'
+            | '八'
+            | '九'
+            | '十'
+            | '百'
+            | '千'
+            | '万'
+            | '亿'
+            | '壹'
+            | '贰'
+            | '叁'
+            | '肆'
+            | '伍'
+            | '陆'
+            | '柒'
+            | '捌'
+            | '玖'
+            | '拾'
+            | '佰'
+            | '仟'
+    )
+}
+
+/// 中文数字字符 → 阿拉伯数字（0-9）
+fn chinese_digit(c: char) -> Option<u64> {
+    match c {
+        '零' => Some(0),
+        '一' | '壹' => Some(1),
+        '二' | '贰' => Some(2),
+        '三' | '叁' => Some(3),
+        '四' | '肆' => Some(4),
+        '五' | '伍' => Some(5),
+        '六' | '陆' => Some(6),
+        '七' | '柒' => Some(7),
+        '八' | '捌' => Some(8),
+        '九' | '玖' => Some(9),
+        _ => None,
+    }
+}
+
+/// 解析小于 10000 的纯中文数字（不含"万""亿"）
+/// 如 "三百五十六" → 356, "一百二十三" → 123
+fn parse_small_number(s: &str) -> f64 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    let mut total = 0.0_f64;
+    let mut current = 0.0_f64;
+
+    for c in s.chars() {
+        if c == '零' {
+            continue;
+        } else if let Some(d) = chinese_digit(c) {
+            total += current;
+            current = d as f64;
+        } else if c == '十' || c == '拾' {
+            if current == 0.0 {
+                current = 1.0;
+            }
+            current *= 10.0;
+        } else if c == '百' || c == '佰' {
+            if current == 0.0 {
+                current = 1.0;
+            }
+            current *= 100.0;
+        } else if c == '千' || c == '仟' {
+            if current == 0.0 {
+                current = 1.0;
+            }
+            current *= 1000.0;
+        }
+    }
+    total += current;
+    total
+}
+
+/// 递归解析带 "亿" 的中文数字（亿内可能含万）
+fn parse_before_yi(s: &str) -> f64 {
+    if s.is_empty() {
+        return 1.0; // "亿" 前无数字表示 1 亿
+    }
+    match s.split_once('万') {
+        Some((left, right)) => {
+            let left_val = if left.is_empty() {
+                1.0
+            } else {
+                parse_small_number(left)
+            };
+            let right_val = parse_small_number(right);
+            left_val * 10_000.0 + right_val
+        }
+        None => parse_small_number(s),
+    }
+}
+
+/// 将完整中文数字字符串转换为数值
+/// 支持 "亿" "万" 组合，如 "一百万亿零三千亿" → 100300000000000
+fn parse_chinese(s: &str) -> f64 {
+    if s.is_empty() {
+        return 0.0;
+    }
+
+    match s.split_once('亿') {
+        Some((left, right)) => {
+            let left_val = parse_before_yi(left);
+            let right_val = parse_chinese(right);
+            left_val * 100_000_000.0 + right_val
+        }
+        None => {
+            // 无 "亿"，尝试按 "万" 拆分
+            match s.split_once('万') {
+                Some((left, right)) => {
+                    let left_val = if left.is_empty() {
+                        1.0
+                    } else {
+                        parse_small_number(left)
+                    };
+                    let right_val = parse_small_number(right);
+                    left_val * 10_000.0 + right_val
+                }
+                None => parse_small_number(s),
+            }
+        }
+    }
+}
+
+/// 将中文数字字符串转为 f64 统一数值
+/// 若字符串不含任何中文数字字符（如 "%"），视为单位标记，返回 1.0
+fn chinese_to_number(s: &str) -> f64 {
+    if s.is_empty() {
+        return 1.0;
+    }
+    if !s.chars().any(is_chinese_number_char) {
+        return 1.0; // 纯非中文数字字符（如 "%"）视为单位标记
+    }
+    let result = parse_chinese(s);
+    if result == 0.0 { 1.0 } else { result }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct NumberItem {
-    pub alpha: String,
-    pub ch_char: String,
+    pub value: f64,
 }
 
 impl<'a> Iterator for NumberIterator<'a> {
@@ -121,11 +282,8 @@ impl<'a> Iterator for NumberIterator<'a> {
 mod tests {
     use super::*;
 
-    fn item(alpha: &str, ch_char: &str) -> NumberItem {
-        NumberItem {
-            alpha: alpha.into(),
-            ch_char: ch_char.into(),
-        }
+    fn item(value: f64) -> NumberItem {
+        NumberItem { value }
     }
 
     #[test]
@@ -142,34 +300,34 @@ mod tests {
 
     #[test]
     fn test_simple_number() {
-        // "元" 触发 → 反向找到 "123.45" → 结果 "123.45元"
+        // "元" 触发 → 反向找到 "123.45" → 数值 123.45
         let mut iter = NumberIterator::new("花费了123.45元");
-        assert_eq!(iter.next(), Some(item("123.45", "")));
+        assert_eq!(iter.next(), Some(item(123.45)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_chinese_number() {
-        // "元" 触发 → 反向找到 "一百二十三" → 结果 "一百二十三元"
+        // "元" 触发 → 反向找到 "一百二十三" → 数值 123
         let mut iter = NumberIterator::new("一共一百二十三元");
-        assert_eq!(iter.next(), Some(item("", "一百二十三")));
+        assert_eq!(iter.next(), Some(item(123.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_chinese_number_clean() {
-        // "元" 触发 → 反向找到 "五百" → 结果 "五百元"
+        // "元" 触发 → 反向找到 "五百" → 数值 500
         let mut iter = NumberIterator::new("花费了五百元");
-        assert_eq!(iter.next(), Some(item("", "五百")));
+        assert_eq!(iter.next(), Some(item(500.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_multiple_amounts() {
         let mut iter = NumberIterator::new("收入100元，支出200.50元，结余-50元");
-        assert_eq!(iter.next(), Some(item("100", "")));
-        assert_eq!(iter.next(), Some(item("200.50", "")));
-        assert_eq!(iter.next(), Some(item("50", "")));
+        assert_eq!(iter.next(), Some(item(100.0)));
+        assert_eq!(iter.next(), Some(item(200.5)));
+        assert_eq!(iter.next(), Some(item(50.0)));
         assert_eq!(iter.next(), None);
     }
 
@@ -183,33 +341,33 @@ mod tests {
     #[test]
     fn test_mixed_with_triggers() {
         let mut iter = NumberIterator::new("价格123元，合计四百五十六万");
-        assert_eq!(iter.next(), Some(item("123", "")));
-        // "万" 触发 → 反向找到 "四百五十六" → 结果 "四百五十六万"
-        assert_eq!(iter.next(), Some(item("", "四百五十六万")));
+        assert_eq!(iter.next(), Some(item(123.0)));
+        // "万" 触发 → "四百五十六万" → 456 × 10000 = 4560000
+        assert_eq!(iter.next(), Some(item(4_560_000.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_amount_with_comma() {
         let mut iter = NumberIterator::new("总额1,234,567.89元");
-        assert_eq!(iter.next(), Some(item("1234567.89", "")));
+        assert_eq!(iter.next(), Some(item(1_234_567.89)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_uppercase_chinese() {
-        // "万" 触发 → 反向 "壹" → 正向 "贰" (遇"仟"停) → "壹万贰"
-        // "元" 触发 → 反向 "肆拾伍" → 正向无 → "肆拾伍元"
+        // "万" 触发 → "壹万贰" → 1×10000 + 2 = 10002
+        // "元" 触发 → "肆拾伍" → 45
         let mut iter = NumberIterator::new("人民币壹万贰仟叁佰肆拾伍元整");
-        assert_eq!(iter.next(), Some(item("", "壹万贰")));
-        assert_eq!(iter.next(), Some(item("", "肆拾伍")));
+        assert_eq!(iter.next(), Some(item(10_002.0)));
+        assert_eq!(iter.next(), Some(item(45.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_amount_at_start() {
         let mut iter = NumberIterator::new("99.9元起");
-        assert_eq!(iter.next(), Some(item("99.9", "")));
+        assert_eq!(iter.next(), Some(item(99.9)));
         assert_eq!(iter.next(), None);
     }
 
@@ -237,8 +395,9 @@ mod tests {
     #[test]
     fn test_adjacent_amounts_with_trigger() {
         let mut iter = NumberIterator::new("前款100元后款200万元");
-        assert_eq!(iter.next(), Some(item("100", "")));
-        assert_eq!(iter.next(), Some(item("200", "万")));
+        assert_eq!(iter.next(), Some(item(100.0)));
+        // "200万" → 200 × 10000 = 2000000
+        assert_eq!(iter.next(), Some(item(2_000_000.0)));
         assert_eq!(iter.next(), None);
     }
 
@@ -246,13 +405,10 @@ mod tests {
     fn test_collect_all() {
         let results: Vec<NumberItem> =
             NumberIterator::new("苹果10元，香蕉20.5元，合计三十元五角").collect();
-        // "10元": "元"触发, 反向"10"
-        // "20.5元": "元"触发, 反向"20.5"
-        // "三十元五": "元"触发, 反向"三十", 正向"五" (MUNBERS), 遇"角"停
-        assert_eq!(
-            results,
-            vec![item("10", ""), item("20.5", ""), item("", "三十五"),]
-        );
+        // "10元": → 10
+        // "20.5元": → 20.5
+        // "三十元五": → 35
+        assert_eq!(results, vec![item(10.0), item(20.5), item(35.0)]);
     }
 
     #[test]
@@ -264,39 +420,40 @@ mod tests {
 
     #[test]
     fn test_chinese_big_numbers() {
-        // "万" 触发 → 反向 "一百" → 正向 "亿零三千亿" → 结果 "一百万亿零三千亿"
+        // "万" 触发 → "一百万亿零三千亿" → 100300000000000
         let mut iter = NumberIterator::new("全国GDP达到一百万亿零三千亿");
-        assert_eq!(iter.next(), Some(item("", "一百万亿零三千亿")));
+        assert_eq!(iter.next(), Some(item(100_300_000_000_000.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_billion_trigger() {
         let mut iter = NumberIterator::new("去年利润五十亿元");
-        assert_eq!(iter.next(), Some(item("", "五十亿")));
+        assert_eq!(iter.next(), Some(item(5_000_000_000.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_percent_trigger() {
+        // "25%" → "%" 是单位标记，数值为 25
         let mut iter = NumberIterator::new("增长率达到25%");
-        assert_eq!(iter.next(), Some(item("25", "%")));
+        assert_eq!(iter.next(), Some(item(25.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_mixed_alpha_and_chinese() {
-        // "3000万元" = 阿拉伯 "3000" + 中文 "万元"
+        // "3000万元" → 3000 × 10000 = 30000000
         let mut iter = NumberIterator::new("项目投资3000万元");
-        assert_eq!(iter.next(), Some(item("3000", "万")));
+        assert_eq!(iter.next(), Some(item(30_000_000.0)));
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_alpha_chinese_mixed() {
-        // "1.5亿" → "亿"触发，反向 "1.5"，正向遇"人"（非MUNBERS）停
+        // "1.5亿" → 1.5 × 100000000 = 150000000
         let mut iter = NumberIterator::new("数据1.5亿人次");
-        assert_eq!(iter.next(), Some(item("1.5", "亿")));
+        assert_eq!(iter.next(), Some(item(150_000_000.0)));
         assert_eq!(iter.next(), None);
     }
 }
